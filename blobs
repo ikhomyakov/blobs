@@ -1,0 +1,240 @@
+#!/usr/bin/env python
+from typing import (
+    TypeVar,
+    Literal,
+    Union,
+    Set,
+    Tuple,
+    List,
+    Dict,
+    Optional,
+    Mapping,
+    MutableMapping,
+    Iterable,
+    Sequence,
+    Any,
+    BinaryIO,
+)
+import sys
+import os
+import pyaconf
+import argparse
+import hashlib
+import tempfile
+import pathlib
+import itertools
+import json
+import subprocess
+import random
+
+
+def sha_and_copy(
+    src: BinaryIO, dst: Optional[BinaryIO] = None, block_size: int = 65536
+) -> str:
+    # TODO: if put on the same FS, use hardlink instead of copy
+    hasher = hashlib.sha256()
+    buf = src.read(block_size)
+    while len(buf) != 0:
+        hasher.update(buf)
+        if dst is not None:
+            dst.write(buf)
+        buf = src.read(block_size)
+    return hasher.hexdigest()
+
+
+T = TypeVar("T")
+
+
+def distribution(items: Iterable[T], replicas: int, sha: str) -> List[T]:
+    combinations = list(itertools.combinations(sorted(items), replicas))
+    hash_value = int(sha[:8], 16)
+    index = hash_value % len(combinations)
+    # print(f"DEBUG1: {hash_value=}, {index=}, {combinations=}")
+    return list(combinations[index])
+
+
+def init_dir(dir: pathlib.Path, subdir_depth: int, pow_subdirs: int) -> None:
+    fmt = "%%0.%dx" % pow_subdirs
+    for i in range(16 ** pow_subdirs):
+        p = pathlib.Path(dir, fmt % i)
+        os.mkdir(p)
+        if subdir_depth > 1:
+            init_dir(p, subdir_depth - 1, pow_subdirs)
+
+
+def sha_path(sha: str, subdir_depth: int, pow_subdirs: int) -> pathlib.Path:
+    return pathlib.Path(
+        *[sha[i * pow_subdirs : (i + 1) * pow_subdirs] for i in range(subdir_depth)],
+        sha,
+    )
+
+
+def tmp_dir(repo: pathlib.Path) -> pathlib.Path:
+    return pathlib.Path(repo, "tmp")
+
+
+def cache_dir(repo: pathlib.Path) -> pathlib.Path:
+    return pathlib.Path(repo, "cache")
+
+
+def store_dir(repo: pathlib.Path, node_id: str = None) -> pathlib.Path:
+    if node_id is None:
+        return pathlib.Path(repo, "store")
+    else:
+        return pathlib.Path(repo, "store", node_id)
+
+
+def rsync(src: str, dst: str, remove_src: bool = False, compress: bool = False) -> None:
+    cmd = ["rsync", "-acIvh"]  # -racvhzI
+    if compress:
+        cmd.append("-z")
+    if remove_src:
+        cmd.append("--remove-source-files")
+    cmd.append(src)
+    cmd.append(dst)
+    print(f"rsync: {cmd=}")
+    r = subprocess.run(cmd, check=True)
+
+
+def synchronize(config: Dict[str, Any], cmd: str) -> None:
+    local_node_id = config["node_id"]
+    nodes = config["nodes"]
+    local_repo = nodes[local_node_id]["repo"]
+
+    for node_id, node in nodes.items():
+        if local_node_id != node_id:
+            remote_spec = "" if node["local"] else f"{node['user']}@{node['host']}:"
+            if cmd in ("pull"):
+                rsync(
+                    remote_spec + str(store_dir(node["repo"], local_node_id)),
+                    str(store_dir(local_repo)),
+                    True, node["compress"]
+                )
+            elif cmd in ("push"):
+                rsync(
+                    str(store_dir(local_repo, node_id)),
+                    remote_spec + str(store_dir(node["repo"])),
+                    True, node["compress"]
+                )
+
+
+def blobs_pull(config: Dict[str, Any], args: List[str]):
+    synchronize(config, "pull")
+
+
+def blobs_push(config: Dict[str, Any], args: List[str]):
+    synchronize(config, "push")
+
+
+def blobs_init(config: Dict[str, Any], args: List[str]):
+    subdir_depth = config["subdir_depth"]
+    pow_subdirs = config["pow_subdirs"]
+    local_node_id = config["node_id"]
+    repo = config["nodes"][local_node_id]["repo"]
+    os.makedirs(repo)
+    os.mkdir(tmp_dir(repo))
+    os.mkdir(cache_dir(repo))
+    init_dir(cache_dir(repo), subdir_depth, pow_subdirs)
+
+    for node_id in config["nodes"].keys():
+        os.makedirs(store_dir(repo, node_id))
+        init_dir(store_dir(repo, node_id), subdir_depth, pow_subdirs)
+
+    print(f"Initialized {local_node_id!r}")
+
+
+def blobs_loc(config: Dict[str, Any], args: List[str]):
+    num_replicas = config["num_replicas"]
+    node_ids = sorted(config["nodes"].keys())
+    assert 1 <= num_replicas <= len(node_ids)
+
+    for sha in args:
+        replica_node_ids = distribution(node_ids, num_replicas, sha)
+        res = dict(sha=sha, replicas=replica_node_ids)
+        json.dump(res, sys.stdout)
+        print()
+
+
+def blobs_put(config: Dict[str, Any], args: List[str]):
+    subdir_depth = config["subdir_depth"]
+    pow_subdirs = config["pow_subdirs"]
+    num_replicas = config["num_replicas"]
+    all_node_ids = sorted(config["nodes"].keys())
+    assert 1 <= num_replicas <= len(all_node_ids)
+    local_node_id = config["node_id"]
+    local_node_config = config["nodes"][local_node_id]
+    repo = local_node_config["repo"]
+
+    for file_path in args:
+        temp_fd, temp_path = tempfile.mkstemp(dir=tmp_dir(repo), text=False)
+        with open(temp_fd, "wb") as temp_f:
+            with open(file_path, "rb") as src_f:
+                sha = sha_and_copy(src_f, temp_f)
+        replica_node_ids = distribution(all_node_ids, num_replicas, sha)
+        if local_node_id not in replica_node_ids:
+            p = pathlib.Path(cache_dir(repo), sha_path(sha, subdir_depth, pow_subdirs))
+            if not p.exists():
+                os.link(temp_path, p)
+        for node_id in replica_node_ids:
+            p = pathlib.Path(
+                store_dir(repo, node_id), sha_path(sha, subdir_depth, pow_subdirs)
+            )
+            if not p.exists():
+                os.link(temp_path, p)
+        os.unlink(temp_path)
+        res = dict(file_path=file_path, sha=sha, replicas=replica_node_ids)
+        json.dump(res, sys.stdout)
+        print()
+
+    synchronize(config, "push")
+
+
+def blobs_get(config: Dict[str, Any], args: List[str]):
+    # TODO: make 'get' work by first 8 chars of sha because we distribute by first 8 chars ?
+    subdir_depth = config["subdir_depth"]
+    pow_subdirs = config["pow_subdirs"]
+    local_node_id = config["node_id"]
+    num_replicas = config["num_replicas"]
+    node_ids = sorted(config["nodes"].keys())
+    assert 1 <= num_replicas <= len(node_ids)
+    nodes = config["nodes"]
+    local_repo = nodes[local_node_id]["repo"]
+
+    for sha in args:
+        replica_node_ids = distribution(node_ids, num_replicas, sha)
+        sp = sha_path(sha, subdir_depth, pow_subdirs)
+        cpath = pathlib.Path(cache_dir(local_repo), sp)
+        spath = pathlib.Path(store_dir(local_repo, local_node_id), sp)
+        if cpath.exists():
+            dpath = cpath
+        elif spath.exists():
+            dpath = spath
+        else:
+            dpath = spath if local_node_id in replica_node_ids else cpath
+            # TODO: if the host isn't available, get another replica
+            src_node_id = replica_node_ids[random.randrange(len(replica_node_ids))]
+            src_node = nodes[src_node_id]
+            remote_spec = "" if src_node["local"] else f"{src_node['user']}@{src_node['host']}:"
+            spath = pathlib.Path(store_dir(src_node["repo"], src_node_id), sp)
+            rsync(remote_spec + str(spath), str(dpath), False, src_node["compress"])
+        print(dpath)
+
+
+commands = dict(
+    init=blobs_init,
+    loc=blobs_loc,
+    put=blobs_put,
+    get=blobs_get,
+    push=blobs_push,
+    pull=blobs_pull,
+)
+
+
+def main():
+    command = sys.argv[1]
+    args = sys.argv[2:]
+    config = pyaconf.load(os.environ["BLOBS_CONFIG"])
+    commands[command](config, args)
+
+
+main()

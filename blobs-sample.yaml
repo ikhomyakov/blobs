@@ -1,0 +1,45 @@
+node_id: colombia
+num_replicas: 3
+subdir_depth: 1
+pow_subdirs: 2 # num_subdirs = 16^num_subdirs
+nodes:
+    usa:
+       compress: false
+       local: true
+       user: ikh
+       host: localhost
+       repo: /Users/ikh/gproj/ikh/blobs/usa/blobs
+       store_size: 1GB
+       cache_size: 100MB
+    colombia:
+       compress: false
+       local: true
+       user: ikh
+       host: localhost
+       repo: /Users/ikh/gproj/ikh/blobs/colombia/blobs
+       store_size: 1GB
+       cache_size: 100MB
+    russia:
+       compress: false
+       local: true
+       user: ikh
+       host: localhost
+       repo: /Users/ikh/gproj/ikh/blobs/russia/blobs
+       store_size: 1GB
+       cache_size: 100MB
+    china:
+       compress: false
+       local: true
+       user: ikh
+       host: localhost
+       repo: /Users/ikh/gproj/ikh/blobs/china/blobs
+       store_size: 1GB
+       cache_size: 100MB
+    oceania:
+       compress: true
+       local: false
+       user: root
+       host: dg1
+       repo: /root/blobs/oceania
+       store_size: 1GB
+       cache_size: 100MB
