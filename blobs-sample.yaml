@@ -1,45 +1,52 @@
 node_id: colombia
 num_replicas: 3
 subdir_depth: 1
-pow_subdirs: 2 # num_subdirs = 16^num_subdirs
+pow_subdirs: 2 # num_subdirs = 16 ** pow_subdirs
+chash_size: 1021
+rehash_verifies_sha: true
 nodes:
     usa:
+       num_vnodes: 40  # weight in terms of chash
        compress: false
        local: true
        user: ikh
        host: localhost
        repo: /Users/ikh/gproj/ikh/blobs/usa/blobs
-       store_size: 1GB
-       cache_size: 100MB
+       store_size: 1 # in GB
+       cache_size: 0.1 # in GB
     colombia:
+       num_vnodes: 40  # weight in terms of chash
        compress: false
        local: true
        user: ikh
        host: localhost
        repo: /Users/ikh/gproj/ikh/blobs/colombia/blobs
-       store_size: 1GB
-       cache_size: 100MB
+       store_size: 2
+       cache_size: 0.5
     russia:
+       num_vnodes: 50  # weight in terms of chash
        compress: false
        local: true
        user: ikh
        host: localhost
        repo: /Users/ikh/gproj/ikh/blobs/russia/blobs
-       store_size: 1GB
-       cache_size: 100MB
+       store_size: 5
+       cache_size: 0.1
     china:
+       num_vnodes: 40  # weight in terms of chash
        compress: false
        local: true
        user: ikh
        host: localhost
        repo: /Users/ikh/gproj/ikh/blobs/china/blobs
-       store_size: 1GB
-       cache_size: 100MB
+       store_size: 1
+       cache_size: 0.1
     oceania:
+       num_vnodes: 40  # weight in terms of chash
        compress: true
        local: false
        user: root
        host: dg1
        repo: /root/blobs/oceania
-       store_size: 1GB
-       cache_size: 100MB
+       store_size: 2
+       cache_size: 0.2
